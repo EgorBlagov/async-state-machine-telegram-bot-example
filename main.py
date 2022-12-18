@@ -1,8 +1,26 @@
-from typing import Any
-import asyncio
 import abc
+import asyncio
+import logging
+from typing import Any
+
 import aiohttp
+import pydantic
 import yarl
+from telegram import Update, ReplyKeyboardMarkup
+from telegram.constants import ParseMode
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    ContextTypes,
+    ExtBot,
+    MessageHandler,
+    filters,
+)
+
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
+)
+logger = logging.getLogger(__name__)
 
 
 async def simple_request(url: str, **query_params: Any) -> dict:
@@ -120,6 +138,56 @@ async def weather_query(io: IoApi):
             return
 
 
-io = CliApi()
-loop = asyncio.new_event_loop()
-loop.run_until_complete(weather_query(io))
+class TelegramSettings(pydantic.BaseSettings):
+    api_key: str
+
+    class Config:
+        env_prefix = "TELEGRAM_BOT_"
+
+
+ACTIVE_TASK_KEY = "active_task_key"
+
+
+def start_first(f):
+    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if ACTIVE_TASK_KEY not in context.user_data:
+            await update.message.reply_text("Not started, call /start first")
+            return
+
+        return await f(update, context)
+
+    return wrapper
+
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if ACTIVE_TASK_KEY in context.user_data:
+        await update.message.reply_text("Already running, call /cancel to exit")
+        return
+
+    context.user_data[ACTIVE_TASK_KEY] = True
+    await update.message.reply_text("Started")
+
+
+@start_first
+async def on_text_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(f"I received text: {update.message.text}")
+
+
+@start_first
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Exiting...")
+    del context.user_data[ACTIVE_TASK_KEY]
+
+
+async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.error(msg="Exception while handling an update:", exc_info=context.error)
+
+
+application = Application.builder().token(TelegramSettings().api_key).build()
+application.add_handler(CommandHandler("start", start))
+application.add_handler(
+    MessageHandler(filters.TEXT & ~filters.COMMAND, on_text_received)
+)
+application.add_handler(CommandHandler("cancel", cancel))
+application.add_error_handler(error_handler)
+application.run_polling()
