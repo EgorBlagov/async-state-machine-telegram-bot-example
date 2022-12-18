@@ -9,6 +9,7 @@ import requests
 def simple_request(url: str, **query_params: Any) -> dict:
     return requests.get(yarl.URL(url).update_query(**query_params)).json()
 
+
 class IoApi(abc.ABC):
     @abc.abstractmethod
     def input(self, prompt: str | None = None) -> str:
@@ -17,10 +18,11 @@ class IoApi(abc.ABC):
     @abc.abstractmethod
     def print(self, message: str) -> None:
         pass
-    
+
     @abc.abstractmethod
     def choose(self, *options: str) -> str:
         pass
+
 
 class CliApi(IoApi):
     def input(self, prompt: str | None = None) -> str:
@@ -41,8 +43,18 @@ class CliApi(IoApi):
             except:
                 self.print("Try again")
 
-def weather_query(io: IoApi):
-    while True:
+
+class State(abc.ABC):
+    class ExitLoop(Exception):
+        pass
+
+    @abc.abstractmethod
+    def run(self, io: IoApi) -> "State":
+        pass
+
+
+class FindCityPosition(State):
+    def run(self, io: IoApi) -> "State":
         city = io.input("Name a city: ")
         response = simple_request(
             "https://geocoding-api.open-meteo.com/v1/search", name=city
@@ -51,7 +63,7 @@ def weather_query(io: IoApi):
 
         if not cities:
             io.print("Found nothing")
-            continue
+            return self
 
         city = cities[0]
         io.print(
@@ -60,10 +72,19 @@ def weather_query(io: IoApi):
             )
         )
 
+        return ShowWeatherAtCoord(city["latitude"], city["longitude"])
+
+
+class ShowWeatherAtCoord(State):
+    def __init__(self, latitude: float, longitude: float):
+        self.latitude = latitude
+        self.longitude = longitude
+
+    def run(self, io: IoApi) -> "State":
         response = simple_request(
             "https://api.open-meteo.com/v1/forecast",
-            latitude=city["latitude"],
-            longitude=city["longitude"],
+            latitude=self.latitude,
+            longitude=self.longitude,
             current_weather=1,
         )
 
@@ -71,12 +92,31 @@ def weather_query(io: IoApi):
             f"Current temperature is {response['current_weather']['temperature']} °C"
         )
 
-        CONTINUE, QUIT = "continue", "quit"
+        return ExitOrContinue()
 
-        choice = io.choose(CONTINUE, QUIT)
-        if choice == QUIT:
+
+class ExitOrContinue(State):
+    CONTINUE, QUIT = "continue", "quit"
+
+    def run(self, io: IoApi) -> "State":
+        choice = io.choose(self.CONTINUE, self.QUIT)
+        if choice == self.QUIT:
+            raise State.ExitLoop
+
+        return FindCityPosition()
+
+
+def weather_query(io: IoApi):
+    current_state = FindCityPosition()
+
+    while True:
+        try:
+            next_state = current_state.run(io)
+            current_state = next_state
+
+        except State.ExitLoop:
             io.print("Terminating")
-            break
+            return
 
 
 io = CliApi()
