@@ -9,20 +9,38 @@ import requests
 def simple_request(url: str, **query_params: Any) -> dict:
     return requests.get(yarl.URL(url).update_query(**query_params)).json()
 
-def weather_query():
+class IoApi(abc.ABC):
+    @abc.abstractmethod
+    def input(self, prompt: str | None = None) -> str:
+        pass
+
+    @abc.abstractmethod
+    def print(self, message: str) -> None:
+        pass
+
+
+class CliApi(IoApi):
+    def input(self, prompt: str | None = None) -> str:
+        return input(prompt)
+
+    def print(self, message: str) -> None:
+        print(message)
+
+
+def weather_query(io: IoApi):
     while True:
-        city = input("Name a city: ")
+        city = io.input("Name a city: ")
         response = simple_request(
             "https://geocoding-api.open-meteo.com/v1/search", name=city
         )
         cities = response.get("results")
 
         if not cities:
-            print("Found nothing")
+            io.print("Found nothing")
             continue
 
         city = cities[0]
-        print(
+        io.print(
             "Found {name} ({country}) at latitude {latitude} and longitude {longitude}".format(
                 **city
             )
@@ -35,8 +53,9 @@ def weather_query():
             current_weather=1,
         )
 
-        print(
+        io.print(
             f"Current temperature is {response['current_weather']['temperature']} °C"
         )
 
-weather_query()
+io = CliApi()
+weather_query(io)
