@@ -60,6 +60,7 @@ class CliApi(IoApi):
             except KeyboardInterrupt:
                 raise
             except:
+                logger.exception("Error in choose")
                 await self.print("Try again")
 
 
@@ -138,6 +139,57 @@ async def weather_query(io: IoApi):
             return
 
 
+class TelegramApi(IoApi):
+    def __init__(self, app: Application, user_id: int):
+        self.app = app
+        self.user_id = user_id
+        self._pending_input: asyncio.Future | None = None
+
+    @property
+    def bot(self) -> ExtBot:
+        return self.app.bot
+
+    @property
+    def loop(self) -> asyncio.AbstractEventLoop:
+        return asyncio.get_running_loop()
+
+    def on_text_received(self, text):
+        if self._pending_input is not None:
+            self._pending_input.set_result(text)
+
+    async def input(self, prompt: str | None = None) -> str:
+        if self._pending_input is None:
+            self._pending_input = self.loop.create_future()
+            if prompt is not None:
+                await self.print(prompt)
+
+        result = await self._pending_input
+        self._pending_input = None
+        return result
+
+    async def print(self, message: str) -> None:
+        await self.bot.send_message(
+            self.user_id, message, parse_mode=ParseMode.MARKDOWN
+        )
+
+    async def choose(self, *options: str) -> str:
+        while True:
+            try:
+                await self.bot.send_message(
+                    self.user_id,
+                    "What should we do next?",
+                    reply_markup=ReplyKeyboardMarkup([options], one_time_keyboard=True),
+                )
+                user_input = await self.input()
+                if user_input in options:
+                    return user_input
+            except KeyboardInterrupt:
+                raise
+            except:
+                logger.exception("Error in choose")
+                await self.print("Try again")
+
+
 class TelegramSettings(pydantic.BaseSettings):
     api_key: str
 
@@ -146,11 +198,17 @@ class TelegramSettings(pydantic.BaseSettings):
 
 
 ACTIVE_TASK_KEY = "active_task_key"
+IO_API_KEY = "io_api_key"
+
+
+def is_running(context: ContextTypes.DEFAULT_TYPE) -> bool:
+    active_task: asyncio.Task | None = context.user_data.get(ACTIVE_TASK_KEY)
+    return active_task is not None and not active_task.done()
 
 
 def start_first(f):
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        if ACTIVE_TASK_KEY not in context.user_data:
+        if not is_running(context):
             await update.message.reply_text("Not started, call /start first")
             return
 
@@ -160,23 +218,28 @@ def start_first(f):
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if ACTIVE_TASK_KEY in context.user_data:
+    if is_running(context):
         await update.message.reply_text("Already running, call /cancel to exit")
         return
 
-    context.user_data[ACTIVE_TASK_KEY] = True
-    await update.message.reply_text("Started")
+    await update.message.reply_text("Starting...")
+
+    loop = asyncio.get_running_loop()
+    telegram_io = TelegramApi(context.application, update.effective_user.id)
+    context.user_data[IO_API_KEY] = telegram_io
+    context.user_data[ACTIVE_TASK_KEY] = loop.create_task(weather_query(telegram_io))
 
 
 @start_first
 async def on_text_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(f"I received text: {update.message.text}")
+    context.user_data[IO_API_KEY].on_text_received(update.message.text)
 
 
 @start_first
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Exiting...")
-    del context.user_data[ACTIVE_TASK_KEY]
+    task: asyncio.Task = context.user_data[ACTIVE_TASK_KEY]
+    task.cancel()
+    await update.message.reply_text("Terminating")
 
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
