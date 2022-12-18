@@ -17,7 +17,10 @@ class IoApi(abc.ABC):
     @abc.abstractmethod
     def print(self, message: str) -> None:
         pass
-
+    
+    @abc.abstractmethod
+    def choose(self, *options: str) -> str:
+        pass
 
 class CliApi(IoApi):
     def input(self, prompt: str | None = None) -> str:
@@ -26,6 +29,17 @@ class CliApi(IoApi):
     def print(self, message: str) -> None:
         print(message)
 
+    def choose(self, *options: str) -> str:
+        while True:
+            try:
+                option_lines = [f"{i}) {opt}" for i, opt in enumerate(options)]
+                self.print("\n".join(option_lines))
+                user_input = self.input("Enter index: ")
+                return options[int(user_input)]
+            except KeyboardInterrupt:
+                raise
+            except:
+                self.print("Try again")
 
 def weather_query(io: IoApi):
     while True:
@@ -56,6 +70,14 @@ def weather_query(io: IoApi):
         io.print(
             f"Current temperature is {response['current_weather']['temperature']} °C"
         )
+
+        CONTINUE, QUIT = "continue", "quit"
+
+        choice = io.choose(CONTINUE, QUIT)
+        if choice == QUIT:
+            io.print("Terminating")
+            break
+
 
 io = CliApi()
 weather_query(io)
